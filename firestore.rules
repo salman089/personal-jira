@@ -1,0 +1,170 @@
+rules_version = '2';
+
+// ---------------------------------------------------------------------------
+// HOW ACCESS WORKS (workspaces)
+// ---------------------------------------------------------------------------
+// Flowboard is organized as: you have one global account (users/{uid}), and
+// you can belong to any number of WORKSPACES (organizations). Each
+// workspace has its own members (with their own role: owner/admin/member)
+// and its own PROJECTS, each of which has its own task board. Tasks and
+// comments live nested under their project, under their workspace.
+//
+// JOINING A WORKSPACE
+//   Workspace admins create a shareable link (an `invites/{token}` doc).
+//   Anyone signed in who opens #/join/{token} adds themselves as a
+//   `member`-role member -- the rule below verifies the invite token they
+//   supply actually exists, points at this workspace, and isn't revoked.
+//   The very first member (the creator) is added as `owner` in the same
+//   flow that creates the workspace itself.
+//
+// ROLES
+//   owner/admin can manage members, projects, and invites. Any member can
+//   create tasks and comment. A task can only be edited/deleted by its
+//   creator, its assignee, or a workspace admin/owner.
+// ---------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isMember(workspaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function memberRole(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role;
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isMember(workspaceId) && memberRole(workspaceId) in ['owner', 'admin'];
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      return isMember(workspaceId) && memberRole(workspaceId) == 'owner';
+    }
+
+    // --- users/{uid} -- global account profile ----------------------------
+    // Purely personal: only you ever read or write your own profile. Your
+    // name/photo are copied into each workspace's `members` subcollection
+    // when you join, so other people never need to read this collection.
+    match /users/{uid} {
+      allow read, update, delete: if isSelf(uid);
+      allow create: if isSelf(uid) && request.resource.data.uid == uid;
+    }
+
+    // --- workspaces/{workspaceId} ------------------------------------------
+    match /workspaces/{workspaceId} {
+      // Readable by anyone signed in (not just members) so the "you've been
+      // invited to <name>" preview screen works before you've joined. Only
+      // the name/id is exposed here -- members, projects, and tasks all
+      // require actual membership below.
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isWorkspaceAdmin(workspaceId);
+      // Normally only the owner-member can delete a workspace. The
+      // createdBy fallback exists for one narrow case: creating a workspace
+      // writes the workspace doc, then the owner member doc, then a
+      // default project, as three separate sequential writes -- if the
+      // second write fails partway (dropped connection, etc.), the client
+      // needs to clean up the newly-created-but-ownerless workspace doc,
+      // which isWorkspaceOwner() alone could never satisfy.
+      allow delete: if isWorkspaceOwner(workspaceId) ||
+        (isSignedIn() && resource.data.createdBy == request.auth.uid);
+
+      match /members/{memberUid} {
+        // isSelf(memberUid) matters here, not just isMember(workspaceId):
+        // joinWorkspaceViaInvite() reads the CALLER'S OWN member doc first
+        // to check "am I already a member?" before creating it. Gating that
+        // read on isMember() alone is circular for a first-time joiner --
+        // their doc doesn't exist yet, so isMember() is false, so the read
+        // that's supposed to check "does it exist yet" gets denied outright.
+        // This was the exact bug behind "invite works, joining doesn't".
+        allow read: if isSelf(memberUid) || isMember(workspaceId);
+
+        // Two ways to become a member, both self-service:
+        //  1. Bootstrap owner: you created this workspace, joining as 'owner'.
+        //  2. Invite: you're joining as 'member' and supply the id of a
+        //     live (non-revoked) invite that actually belongs to this
+        //     workspace -- `invitedVia` is stored on the member doc as a
+        //     record of which link was used.
+        allow create: if isSelf(memberUid) && (
+          (request.resource.data.role == 'owner' &&
+            get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.createdBy == request.auth.uid) ||
+          (request.resource.data.role == 'member' &&
+            get(/databases/$(database)/documents/invites/$(request.resource.data.invitedVia)).data.workspaceId == workspaceId &&
+            get(/databases/$(database)/documents/invites/$(request.resource.data.invitedVia)).data.revoked == false)
+        );
+
+        // Admins can change anyone's role or remove them; anyone can update
+        // their own denormalized name/photo (but not their own role) or
+        // remove themselves (leave the workspace).
+        allow update: if isWorkspaceAdmin(workspaceId) ||
+          (isSelf(memberUid) && request.resource.data.role == resource.data.role);
+        allow delete: if isWorkspaceAdmin(workspaceId) || isSelf(memberUid);
+      }
+
+      match /projects/{projectId} {
+        allow read: if isMember(workspaceId);
+        allow create: if isMember(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if isMember(workspaceId);
+        allow delete: if isWorkspaceAdmin(workspaceId) ||
+          (isMember(workspaceId) && resource.data.createdBy == request.auth.uid);
+
+        match /tasks/{taskId} {
+          allow read: if isMember(workspaceId);
+          allow create: if isMember(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+          allow update: if isMember(workspaceId) &&
+            (resource.data.createdBy == request.auth.uid ||
+              resource.data.assignedTo == request.auth.uid ||
+              isWorkspaceAdmin(workspaceId));
+          allow delete: if isMember(workspaceId) &&
+            (resource.data.createdBy == request.auth.uid || isWorkspaceAdmin(workspaceId));
+
+          match /comments/{commentId} {
+            allow read: if isMember(workspaceId);
+            allow create: if isMember(workspaceId) && request.resource.data.authorId == request.auth.uid;
+            allow delete: if isMember(workspaceId) &&
+              (resource.data.authorId == request.auth.uid || isWorkspaceAdmin(workspaceId));
+          }
+        }
+      }
+    }
+
+    // --- invites/{inviteId} -- top-level so the join link is one token ----
+    match /invites/{inviteId} {
+      // Anyone signed in can read an invite by its token (to preview which
+      // workspace it's for before joining) -- the token itself is the secret.
+      allow read: if isSignedIn();
+      allow create: if isWorkspaceAdmin(request.resource.data.workspaceId) &&
+        request.resource.data.createdBy == request.auth.uid;
+      allow update: if isWorkspaceAdmin(resource.data.workspaceId);
+      allow delete: if isWorkspaceAdmin(resource.data.workspaceId);
+    }
+
+    // --- notifications/{id} -------------------------------------------
+    // A user only ever reads/updates/deletes their OWN notifications.
+    // Creation is different: notifications are written by whichever
+    // teammate's action triggered them (e.g. User A assigns a task to User
+    // B, so User A's browser writes the notification doc for User B) --
+    // there's no server in this app to do that centrally. That means any
+    // signed-in user can technically create a notification doc for any
+    // other user; this is an accepted tradeoff for a small trusted-team
+    // tool without a backend. If you outgrow that trust model, move
+    // notification creation into a Cloud Function trigger instead.
+    match /notifications/{notificationId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId is string;
+    }
+
+    // Everything else (including the legacy `team` and flat `tasks`
+    // collections from earlier versions of this app) is denied.
+  }
+}

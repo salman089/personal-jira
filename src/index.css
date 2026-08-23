@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The app supports both light and dark mode (Tailwind's `class` strategy --
+   see ThemeProvider.tsx). Components use dark: variants for anything that
+   needs to differ; this file just sets the page-level defaults so there's
+   no flash of unstyled content while React mounts. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #fafafa; /* zinc-50 */
+  color: #18181b; /* zinc-900 */
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+html.dark body {
+  background-color: #09090b; /* zinc-950 */
+  color: #e4e4e7; /* zinc-200 */
+}
+
+/* Thin, unobtrusive scrollbars that fit either theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+html.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.15);
+  border-radius: 9999px;
+}
+html.dark *::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Comfortable minimum touch target size on small/touch screens. */
+@media (pointer: coarse) {
+  button,
+  a,
+  select,
+  input[type='checkbox'],
+  input[type='radio'] {
+    min-height: 2.25rem;
+  }
+}

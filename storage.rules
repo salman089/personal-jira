@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Avatar uploads. Each user can only write files under their own uid folder,
+// and only small images -- everyone can read (avatars aren't sensitive and
+// need to be visible to teammates on tasks/comments/the People panel).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /avatars/{uid}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null &&
+        request.auth.uid == uid &&
+        request.resource.size < 3 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+    }
+  }
+}
