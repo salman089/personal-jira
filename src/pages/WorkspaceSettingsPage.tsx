@@ -41,6 +41,18 @@ export function WorkspaceSettingsPage() {
   const [tab, setTab] = useState<Tab>('Members')
   const [name, setName] = useState(workspace?.name ?? '')
   const [savingName, setSavingName] = useState(false)
+
+  // `workspace` loads asynchronously (it's null on first render, before the
+  // onSnapshot subscription resolves), so the useState default above always
+  // misses it. Adjust state during render (React's documented pattern for
+  // syncing state to a prop) rather than in an effect, keyed off workspaceId
+  // so it fires once per workspace rather than clobbering an in-progress
+  // edit every time the live doc happens to re-emit.
+  const [syncedWorkspaceId, setSyncedWorkspaceId] = useState<string | undefined>(undefined)
+  if (workspace && workspace.id !== syncedWorkspaceId) {
+    setSyncedWorkspaceId(workspace.id)
+    setName(workspace.name)
+  }
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [creatingInvite, setCreatingInvite] = useState(false)
