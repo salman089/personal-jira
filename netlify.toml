@@ -1,0 +1,8 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# No SPA redirect rules needed here: the app uses HashRouter (see App.tsx),
+# so every in-app "route" like /#/board is really just a fragment on top of
+# the single real path "/" -- the browser never sends the part after # to
+# the server, so there's nothing for Netlify to redirect.
